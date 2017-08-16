@@ -35,12 +35,17 @@ class Vimeo
     const USER_AGENT = 'vimeo.php 1.2.6; (http://developer.vimeo.com/api/docs)';
     const CERTIFICATE_PATH = '/certificates/vimeo-api.pem';
 
+    const CACHE_FILE = 'file';
+
     protected $_curl_opts = array();
     protected $CURL_DEFAULTS = array();
 
     private $_client_id = null;
     private $_client_secret = null;
     private $_access_token = null;
+
+    private $_cache_enabled = 'file';
+    private $_cache_dir = '';
 
     /**
      * Creates the Vimeo library, and tracks the client and token information.
@@ -51,6 +56,8 @@ class Vimeo
      */
     public function __construct($client_id, $client_secret, $access_token = null)
     {
+        $this->_cache_dir = $_SERVER['DOCUMENT_ROOT'] . '/../data/cache/vimeo/';
+
         $this->_client_id = $client_id;
         $this->_client_secret = $client_secret;
         $this->_access_token = $access_token;
@@ -65,6 +72,7 @@ class Vimeo
         );
     }
 
+
     /**
      * Make an API request to Vimeo.
      *
@@ -76,6 +84,8 @@ class Vimeo
      */
     public function request($url, $params = array(), $method = 'GET', $json_body = true)
     {
+        // echo '<p>requested: ' . $url . '</p>';
+
         // add accept header hardcoded to version 3.0
         $headers[] = 'Accept: ' . self::VERSION_STRING;
         $headers[] = 'User-Agent: ' . self::USER_AGENT;
@@ -429,6 +439,11 @@ class Vimeo
      */
     private function _request($url, $curl_opts = array())
     {
+        // Returned cached value
+        if ($this->_cache_enabled && ($response = $this->_getCached($url))) {
+            return $response;
+        }
+
         // Merge the options (custom options take precedence).
         $curl_opts = $this->_curl_opts + $curl_opts + $this->CURL_DEFAULTS;
 
@@ -438,9 +453,14 @@ class Vimeo
         $response = curl_exec($curl);
         $curl_info = curl_getinfo($curl);
 
+        // echo '<p>calling the api ' . $curl_info['http_code'] . '</p>';
+
         if (isset($curl_info['http_code']) && $curl_info['http_code'] === 0) {
             $curl_error = curl_error($curl);
             $curl_error = !empty($curl_error) ? '[' . $curl_error .']' : '';
+
+            //echo '<p>Error: ' . $curl_error . '</p>';
+
             throw new VimeoRequestException('Unable to complete request.' . $curl_error);
         }
 
@@ -451,12 +471,18 @@ class Vimeo
         $headers = substr($response, 0, $header_size);
         $body = substr($response, $header_size);
 
-        // Return it raw.
-        return array(
+        $final_response = array(
             'body' => $body,
             'status' => $curl_info['http_code'],
             'headers' => self::parse_headers($headers)
         );
+
+        if ($this->_cache_enabled) {
+            $this->_cache($url, $final_response);
+        }
+
+        // Return it raw.
+        return $final_response;
     }
 
     /**
@@ -541,4 +567,53 @@ class Vimeo
         // Furnish the location for the new clip in the API via the Location header.
         return $completion['headers']['Location'];
     }
+
+
+    /**
+     * Cache a response.
+     *
+     * @param string $url The parameters for the response.
+     * @param string $response The serialized response data.
+     */
+    private function _cache($url, $response)
+    {
+        $hash = md5(serialize($url));
+        $response = json_encode($response);
+
+        if ($this->_cache_enabled == self::CACHE_FILE) {
+        		$file = $this->_cache_dir.'/'.$hash.'.cache';
+            if (file_exists($file)) {
+                unlink($file);
+            }
+            return file_put_contents($file, $response);
+        }
+    }
+
+    /**
+     * Get the unserialized contents of the cached request.
+     *
+     * @param array $url The full list of api parameters for the request.
+     */
+    private function _getCached($url)
+    {
+        $hash = md5(serialize($url));
+        $expire =  86400;
+
+        if ($this->_cache_enabled == self::CACHE_FILE) {
+            $file = $this->_cache_dir.'/'.$hash.'.cache';
+
+            if (file_exists($file)) {
+	            $last_modified = filemtime($file);
+	            if (substr($file, -6) == '.cache' && ($last_modified + $expire) < time()) {
+	                unlink($file);
+	            }
+	          }
+
+            if (file_exists($file)) {
+                return json_decode(file_get_contents($file), true);
+            }
+
+        }
+    }
+
 }
